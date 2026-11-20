@@ -23,3 +23,6 @@ __pycache__/
 *.log
 .env
 .env.*
+
+# Transient first pass from tools/make_sample.py
+/data/*.probe.h265

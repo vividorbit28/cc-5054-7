@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>分层视频子流预览</title>
+<style>
+  :root {
+    --bg: #10131a; --panel: #171b24; --panel2: #1f2531; --line: #2b3342;
+    --text: #e6e9ef; --dim: #9aa4b5; --accent: #5cc8ff;
+    --base: #6b7280; --enh: #5cc8ff; --good: #48d18a; --bad: #ff6b6b;
+    --warn: #f5b942;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 13px/1.45 -apple-system, "Segoe UI", "Noto Sans SC", sans-serif;
+  }
+  header { padding: 14px 20px 10px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 15px; margin: 0 0 3px; font-weight: 600; }
+  header .sub { color: var(--dim); font-size: 12px; }
+  main {
+    display: grid; grid-template-columns: minmax(0, 1fr) 330px;
+    gap: 16px; padding: 16px 20px 40px; max-width: 1500px; margin: 0 auto;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px 14px; margin-bottom: 14px;
+  }
+  .card h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--dim); margin: 0 0 10px; font-weight: 600;
+  }
+  video { width: 100%; display: block; background: #000; border-radius: 6px; }
+  .transport { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: #1d4d67; border-color: #2b7ea6; color: #d7f1ff; }
+  .time { color: var(--dim); font-variant-numeric: tabular-nums; }
+
+  /* draggable switch ruler */
+  .ruler-wrap { position: relative; margin-top: 12px; user-select: none; }
+  .ruler {
+    position: relative; height: 46px; background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 6px; cursor: ew-resize;
+    overflow: hidden;
+  }
+  .seg { position: absolute; top: 0; bottom: 0; }
+  .seg.low { background: rgba(107,114,128,.45); }
+  .seg.high { background: rgba(92,200,255,.22); }
+  .ticks { position: absolute; inset: 0; pointer-events: none; }
+  .tick { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,.06); }
+  .tick.tid1 { background: rgba(255,255,255,.10); }
+  .tick.tid2 { background: rgba(255,255,255,.16); }
+  .tick.tid3 { background: rgba(255,255,255,.22); }
+  .switch-mark {
+    position: absolute; top: -3px; bottom: -3px; width: 3px; background: var(--accent);
+    box-shadow: 0 0 0 1px #0b0d12; transform: translateX(-50%); pointer-events: none;
+  }
+  .switch-mark::after {
+    content: ""; position: absolute; top: 0; left: 50%; width: 0; height: 0;
+    transform: translateX(-50%);
+    border-left: 6px solid transparent; border-right: 6px solid transparent;
+    border-top: 7px solid var(--accent);
+  }
+  .rec-mark {
+    position: absolute; top: 50%; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px;
+    border-radius: 50%; background: var(--good); pointer-events: none;
+  }
+  .rec-mark.pre { background: var(--warn); }
+  .cursor { position: absolute; top: 0; bottom: 0; width: 1px; background: #fff; opacity: .5; pointer-events: none; }
+  .ruler-legend {
+    display: flex; gap: 16px; color: var(--dim); font-size: 11px; margin-top: 6px;
+    flex-wrap: wrap;
+  }
+  .swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 4px; vertical-align: middle; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; }
+  .stat { display: flex; justify-content: space-between; gap: 8px; }
+  .stat .k { color: var(--dim); }
+  .stat .v { font-variant-numeric: tabular-nums; }
+  .v.good { color: var(--good); } .v.bad { color: var(--bad); } .v.warn { color: var(--warn); }
+
+  .controls { display: grid; grid-template-columns: 1fr; gap: 10px; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .row label { color: var(--dim); min-width: 62px; }
+  input[type=range] { flex: 1; accent-color: var(--accent); min-width: 90px; }
+  .layer-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .layer-btns button.active { background: #1d4d67; border-color: #2b7ea6; color: #d7f1ff; }
+  .policy-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .policy-btns button { font-size: 12px; padding: 5px 9px; }
+  .policy-btns button.active { background: #1d4d67; border-color: #2b7ea6; color: #d7f1ff; }
+  .hint { color: var(--dim); font-size: 11px; }
+  .err {
+    border-color: #6d2b2b; background: #241518; color: #ffb4b4;
+    padding: 10px 12px; border-radius: 6px; font-size: 12px;
+  }
+  .missing-list { margin: 6px 0 0; padding-left: 16px; color: #ffd0d0; font-size: 12px; }
+
+  table.frames { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  table.frames th, table.frames td {
+    padding: 3px 6px; text-align: right; border-bottom: 1px solid #232a36; font-size: 12px;
+  }
+  table.frames th { color: var(--dim); font-weight: 500; text-align: right; }
+  table.frames td.left, table.frames th.left { text-align: left; }
+  table.frames tr.pre td { color: var(--warn); }
+  table.frames tr.rec td { color: var(--good); }
+  .frame-scroll { max-height: 260px; overflow-y: auto; }
+  .verdict { color: var(--dim); font-size: 11px; }
+  .spinner { display: none; color: var(--accent); font-size: 12px; }
+  .spinner.on { display: inline; }
+  @media (max-width: 1050px) { main { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>分层视频子流提取与预览</h1>
+  <div class="sub" id="subtitle">加载中…</div>
+</header>
+<main>
+  <section>
+    <div class="card">
+      <video id="video" muted playsinline controls></video>
+      <div class="transport">
+        <button id="play" class="primary">播放</button>
+        <span class="time" id="clock">0:00.00 / 0:00.00</span>
+        <span style="flex:1"></span>
+        <span class="time" id="mediaKind">—</span>
+      </div>
+
+      <div class="ruler-wrap">
+        <div class="ruler" id="ruler">
+          <div class="seg low" id="segLow"></div>
+          <div class="seg high" id="segHigh"></div>
+          <div class="ticks" id="ticks"></div>
+          <div id="recMarks"></div>
+          <div class="cursor" id="cursor" style="left:0"></div>
+          <div class="switch-mark" id="switchMark" style="left:0"></div>
+        </div>
+        <div class="ruler-legend">
+          <span><span class="swatch" style="background:rgba(107,114,128,.7)"></span>低带宽段（层 0）</span>
+          <span><span class="swatch" style="background:rgba(92,200,255,.45)"></span>升层段</span>
+          <span><span class="swatch" style="background:var(--accent)"></span>切换点（可拖动）</span>
+          <span><span class="swatch" style="background:var(--good);border-radius:50%"></span>达到目标质量</span>
+          <span><span class="swatch" style="background:var(--warn);border-radius:50%"></span>预取参考帧</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>逐帧校验（严格解码会话）</h2>
+      <div class="frame-scroll">
+        <table class="frames">
+          <thead><tr>
+            <th class="left">显示序</th><th>层</th><th>恢复</th><th>PSNR dB</th>
+            <th class="left">判定</th>
+          </tr></thead>
+          <tbody id="frameRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <aside>
+    <div class="card">
+      <h2>切换设置</h2>
+      <div class="controls">
+        <div class="row">
+          <label>目标时刻</label>
+          <input type="range" id="atRange" min="0" max="10" value="6">
+          <span class="v" id="atVal" style="min-width:24px;text-align:right">6</span>
+        </div>
+        <div class="row">
+          <label>保留层</label>
+          <div class="layer-btns" id="layerBtns"></div>
+        </div>
+        <div class="row">
+          <label>策略</label>
+          <div class="policy-btns" id="policyBtns">
+            <button data-policy="defer">延后切换</button>
+            <button data-policy="preroll">预取参考</button>
+            <button data-policy="naive">朴素截断</button>
+            <button data-policy="forced">强制截断</button>
+          </div>
+        </div>
+        <div class="row">
+          <label>目标质量</label>
+          <input type="range" id="targetRange" min="30" max="50" value="38">
+          <span class="v" id="targetVal" style="min-width:32px;text-align:right">38</span>
+        </div>
+        <div class="hint">拖动上方标尺或调整目标时刻都会重建子流；播放器展示的是严格解码校验后的结果，浏览器里的画面是 H.264 预览代理。</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>本次结果</h2>
+      <div class="spinner" id="spinner">重建中…</div>
+      <div id="result"></div>
+    </div>
+
+    <div class="card">
+      <h2>片段信息</h2>
+      <div class="stats" id="infoStats"></div>
+    </div>
+  </aside>
+</main>
+
+<script>
+const FPS = 24;
+const qs = new URLSearchParams(location.search);
+const state = {
+  info: null,
+  at: Number(qs.get("at") ?? 6),
+  layers: (qs.get("layers") ?? "0,1,2").split(",").map(Number).filter(x => !isNaN(x)),
+  low: [0],
+  policy: qs.get("policy") ?? "defer",
+  target: 38,
+  build: null,
+  buildSeq: 0,
+  dragging: false,
+};
+
+const $ = s => document.querySelector(s);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+const fmtTime = s => {
+  const m = Math.floor(s / 60), r = s - m * 60;
+  return `${m}:${r.toFixed(2).padStart(5, "0")}`;
+};
+
+async function api(path) {
+  const res = await fetch(path);
+  const body = await res.json().catch(() => ({ error: "bad json" }));
+  if (!res.ok) throw new Error(body.error || res.statusText);
+  return body;
+}
+
+function layerSet() {
+  // keep 0 plus whatever is selected; the set is contiguous from 0 for this clip
+  const max = Math.max(0, ...state.layers.filter(x => x > 0));
+  return Array.from({ length: max + 1 }, (_, i) => i);
+}
+
+function renderTicks() {
+  const ruler = $("#ruler");
+  const ticks = $("#ticks");
+  ticks.innerHTML = "";
+  const n = state.info.frame_count;
+  state.info.pictures.forEach(p => {
+    const t = el("div", "tick tid" + p.temporal_id);
+    t.style.left = (p.presentation / n * 100) + "%";
+    ticks.appendChild(t);
+  });
+}
+
+function renderLayerButtons() {
+  const holder = $("#layerBtns");
+  holder.innerHTML = "";
+  state.info.temporal_ids.forEach(t => {
+    const b = el("button", "", "0–" + t);
+    b.dataset.layer = t;
+    b.classList.toggle("active", layerSet().length - 1 === t);
+    b.onclick = () => {
+      state.layers = Array.from({ length: t + 1 }, (_, i) => i);
+      renderLayerButtons();
+      rebuild();
+    };
+    holder.appendChild(b);
+  });
+}
+
+function renderInfo() {
+  const s = $("#infoStats");
+  const info = state.info;
+  s.innerHTML = "";
+  const add = (k, v, cls = "") => {
+    const d = el("div", "stat");
+    d.appendChild(el("span", "k", k));
+    d.appendChild(el("span", "v " + cls, v));
+    s.appendChild(d);
+  };
+  add("帧数", info.frame_count);
+  add("GOP", info.gop_count);
+  add("层", info.temporal_ids.join(", "));
+  add("整段字节", info.full_bytes.toLocaleString());
+  info.temporal_ids.forEach(t => add(`层${t} 帧数`, info.layer_counts[String(t)]));
+  $("#subtitle").textContent =
+    `${info.name} · ${info.frame_count} 帧 · ${info.fps} fps · 时间层 ${info.temporal_ids.join("/")}`;
+}
+
+function renderRulerTimeline() {
+  const b = state.build;
+  const n = state.info.frame_count;
+  const ruler = $("#ruler");
+  const segLow = $("#segLow"), segHigh = $("#segHigh");
+  const mark = $("#switchMark");
+  const recMarks = $("#recMarks");
+  recMarks.innerHTML = "";
+  const span = (from, to) => Math.max(0, Math.min(100, to / n * 100)) + "%";
+  if (!b) {
+    segLow.style.left = "0%"; segLow.style.width = "100%";
+    segHigh.style.width = "0%"; mark.style.left = "0%";
+    return;
+  }
+  const sw = b.switch_presentation;
+  segLow.style.left = "0%"; segLow.style.width = span(0, sw);
+  segHigh.style.left = span(0, sw); segHigh.style.width = span(sw, n);
+  mark.style.left = span(0, sw);
+  const preroll = new Set(b.preroll || []);
+  (b.frames || []).forEach(f => {
+    if (preroll.has(f.presentation) || (f.recovers && f.presentation >= sw)) {
+      const m = el("div", "rec-mark" + (preroll.has(f.presentation) ? " pre" : ""));
+      m.style.left = span(0, f.presentation + 0.5);
+      m.title = `显示序 ${f.presentation} · 层 ${f.temporal_id}` +
+        (preroll.has(f.presentation) ? " · 预取参考帧" : " · 达到目标质量");
+      recMarks.appendChild(m);
+    }
+  });
+}
+
+function renderResult() {
+  const b = state.build;
+  const out = $("#result");
+  out.innerHTML = "";
+  if (!b) { out.textContent = "尚未构建"; return; }
+  const add = (k, v, cls = "") => {
+    const d = el("div", "stat");
+    d.appendChild(el("span", "k", k));
+    d.appendChild(el("span", "v " + cls, v));
+    out.appendChild(d);
+  };
+  const stats = el("div", "stats");
+  out.appendChild(stats);
+  const put = (k, v, cls = "") => {
+    const d = el("div", "stat");
+    d.appendChild(el("span", "k", k));
+    d.appendChild(el("span", "v " + cls, v));
+    stats.appendChild(d);
+  };
+  if (b.error) {
+    out.appendChild(el("div", "err", b.error));
+    if (b.missing && b.missing.length) {
+      const ul = el("ul", "missing-list");
+      b.missing.forEach(m => ul.appendChild(el("li", "",
+        `显示 ${m.picture_display}（层 ${m.picture_temporal_id}）需要缺失的显示 ${m.missing_display}（层 ${m.missing_temporal_id}）`)));
+      out.appendChild(ul);
+    }
+    return;
+  }
+  put("请求时刻", b.requested_presentation);
+  put("实际切换", b.switch_presentation,
+      b.deferred_by > 0 ? "warn" : "good");
+  put("延后", b.deferred_by + " 帧", b.deferred_by > 0 ? "warn" : "");
+  put("保留层", b.layer_set.join("–"));
+  if (b.bytes_total !== undefined) put("子流字节", b.bytes_total.toLocaleString());
+  if (b.bytes_pictures !== undefined) put("图像字节", b.bytes_pictures.toLocaleString());
+  if (b.picture_count !== undefined) put("访问单元", b.picture_count);
+  if (b.preroll && b.preroll.length) put("预取参考帧", b.preroll.join(", "), "warn");
+  const c = b.counts || {};
+  put("目标质量帧", c.recovered ?? "—", "good");
+  put("基础层帧", c.base ?? "—");
+  put("丢弃", c.missing ?? "—");
+  put("错误隐藏/重复", (c.duplicate ?? 0) + (c.corrupt ?? 0),
+      ((c.duplicate ?? 0) + (c.corrupt ?? 0)) > 0 ? "bad" : "good");
+  put("最早恢复", b.first_recovery === null || b.first_recovery === undefined
+      ? "无" : "显示 " + b.first_recovery,
+      b.first_recovery === null || b.first_recovery === undefined ? "bad" : "good");
+  if (b.decode_errors && b.decode_errors.length)
+    put("解码器拒绝", b.decode_errors.length + " 次", "bad");
+  put("H.264 预览", "可用");
+  const dl = el("a", "", "下载 HEVC 子流");
+  dl.href = b.raw_url;
+  dl.style.display = "inline-block";
+  dl.style.marginTop = "10px";
+  dl.style.color = "var(--accent)";
+  dl.style.fontSize = "12px";
+  out.appendChild(dl);
+}
+
+function renderFrames() {
+  const tbody = $("#frameRows");
+  tbody.innerHTML = "";
+  const b = state.build;
+  if (!b || !b.frames) return;
+  const sw = b.switch_presentation;
+  const preroll = new Set(b.preroll || []);
+  b.frames.forEach(f => {
+    const tr = el("tr");
+    if (preroll.has(f.presentation)) tr.classList.add("pre");
+    else if (f.recovers) tr.classList.add("rec");
+    tr.appendChild(el("td", "left", f.presentation));
+    tr.appendChild(el("td", "", f.temporal_id));
+    tr.appendChild(el("td", "", f.recovers ? "✓" : "·"));
+    tr.appendChild(el("td", "", f.psnr.toFixed(1)));
+    tr.appendChild(el("td", "left verdict", f.reason));
+    tbody.appendChild(tr);
+  });
+}
+
+function applyBuild(b) {
+  state.build = b;
+  const v = $("#video");
+  const url = b.media_url ? b.media_url + "?v=" + encodeURIComponent(b.requested_presentation + "-" + state.buildSeq) : "";
+  if (url) {
+    v.src = url;
+    v.load();
+  }
+  $("#mediaKind").textContent = "H.264 预览代理";
+  renderRulerTimeline();
+  renderResult();
+  renderFrames();
+  updateCursor();
+}
+
+async function rebuild() {
+  const seq = ++state.buildSeq;
+  $("#spinner").classList.add("on");
+  $("#result").innerHTML = "";
+  const params = new URLSearchParams({
+    at: state.at,
+    layers: layerSet().join(","),
+    low: state.low.join(","),
+    policy: state.policy,
+    target: state.target,
+  });
+  try {
+    const b = await api("/api/build?" + params.toString());
+    if (seq !== state.buildSeq) return;
+    applyBuild(b);
+  } catch (err) {
+    if (seq !== state.buildSeq) return;
+    state.build = { error: err.message, requested_presentation: state.at,
+      missing: [], frames: [], switch_presentation: state.at, preroll: [] };
+    renderResult(); renderFrames(); renderRulerTimeline();
+  } finally {
+    if (seq === state.buildSeq) $("#spinner").classList.remove("on");
+  }
+}
+
+function updateCursor() {
+  const v = $("#video");
+  const n = state.info ? state.info.frame_count : 1;
+  const dur = v.duration && isFinite(v.duration) ? v.duration : n / FPS;
+  const frac = dur > 0 ? Math.min(1, Math.max(0, v.currentTime / dur)) : 0;
+  $("#cursor").style.left = (frac * 100) + "%";
+  $("#clock").textContent = `${fmtTime(v.currentTime)} / ${fmtTime(dur)}`;
+}
+
+function presentationToTime(p) { return p / FPS; }
+
+function seekToPresentation(p) {
+  const v = $("#video");
+  try { v.currentTime = Math.min(presentationToTime(p), v.duration || 1e9); } catch (_) {}
+}
+
+function setupRuler() {
+  const ruler = $("#ruler");
+  const n = () => state.info.frame_count;
+  const posToAt = clientX => {
+    const r = ruler.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (clientX - r.left) / r.width));
+    return Math.round(frac * (n() - 1));
+  };
+  const apply = (clientX, commit) => {
+    const at = posToAt(clientX);
+    state.at = at;
+    $("#atRange").value = at;
+    $("#atVal").textContent = at;
+    $("#switchMark").style.left = (at / n() * 100) + "%";
+    if (commit) rebuild();
+  };
+  ruler.addEventListener("pointerdown", e => {
+    state.dragging = true;
+    ruler.setPointerCapture(e.pointerId);
+    apply(e.clientX, false);
+  });
+  ruler.addEventListener("pointermove", e => {
+    if (!state.dragging) return;
+    apply(e.clientX, false);
+  });
+  const end = e => {
+    if (!state.dragging) return;
+    state.dragging = false;
+    apply(e.clientX, true);
+  };
+  ruler.addEventListener("pointerup", end);
+  ruler.addEventListener("pointercancel", () => { state.dragging = false; });
+}
+
+function setupControls() {
+  $("#atRange").addEventListener("input", e => {
+    state.at = Number(e.target.value);
+    $("#atVal").textContent = state.at;
+    $("#switchMark").style.left = (state.at / state.info.frame_count * 100) + "%";
+  });
+  $("#atRange").addEventListener("change", () => rebuild());
+  $("#targetRange").addEventListener("input", e => {
+    state.target = Number(e.target.value);
+    $("#targetVal").textContent = state.target;
+  });
+  $("#targetRange").addEventListener("change", () => rebuild());
+  document.querySelectorAll("#policyBtns button").forEach(btn => {
+    btn.onclick = () => {
+      state.policy = btn.dataset.policy;
+      document.querySelectorAll("#policyBtns button")
+        .forEach(b => b.classList.toggle("active", b === btn));
+      rebuild();
+    };
+  });
+  const v = $("#video");
+  $("#play").onclick = () => {
+    if (v.paused) { v.play(); } else { v.pause(); }
+  };
+  v.addEventListener("play", () => { $("#play").textContent = "暂停"; });
+  v.addEventListener("pause", () => { $("#play").textContent = "播放"; });
+  v.addEventListener("timeupdate", updateCursor);
+  v.addEventListener("loadedmetadata", () => {
+    updateCursor();
+    // land the viewer right before the switch, so they can watch the upgrade
+    if (state.build && state.build.switch_presentation !== undefined) {
+      seekToPresentation(Math.max(0, state.build.switch_presentation - 12));
+    }
+  });
+}
+
+async function boot() {
+  state.info = await api("/api/info");
+  const maxAt = state.info.frame_count - 1;
+  $("#atRange").max = maxAt;
+  state.at = Math.min(maxAt, Math.max(0, state.at));
+  $("#atRange").value = state.at;
+  $("#atVal").textContent = state.at;
+  renderInfo();
+  renderTicks();
+  renderLayerButtons();
+  const active = document.querySelector(`#policyBtns button[data-policy="${state.policy}"]`);
+  if (active) active.classList.add("active");
+  setupRuler();
+  setupControls();
+  renderRulerTimeline();
+  await rebuild();
+}
+
+boot().catch(err => {
+  $("#result").innerHTML = `<div class="err">${err.message}</div>`;
+});
+</script>
+</body>
+</html>
