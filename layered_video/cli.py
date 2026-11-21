@@ -4,6 +4,7 @@
     python -m layered_video.cli plan  data/sample_4layer.h265 --at 6 --layers 0,1,2
     python -m layered_video.cli verify data/sample_4layer.h265 --at 6 --layers 0,1,2
     python -m layered_video.cli extract data/sample_4layer.h265 --at 6 --layers 0,1,2 --out sub.h265
+    python -m layered_video.cli diagnose sub.h265 --source data/sample_4layer.h265
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import sys
 from .analysis import POLICY_LABELS, analyse
 from .bitstream import parse_stream
 from .extractor import Policy
+from .locator import diagnose
 
 
 def _layers(text: str) -> list[int]:
@@ -35,6 +37,53 @@ def _print_layout(layout) -> None:
               f"{p.picture_type:4s}  {p.gop:3d}  {p.ref_indices}")
     if layout.frame_count > 24:
         print(f" ... {layout.frame_count - 24} more")
+
+
+def _print_diagnosis(d) -> int:
+    pr = d.probe
+    if pr.ok:
+        print("sub-stream decodes cleanly in an independent session; no fault found")
+        return 0
+    print(f"fault              AU {pr.fault_au} "
+          f"(source decode {pr.fault_source_index}): {pr.error['error']}")
+    print(f"frozen at          "
+          f"{'no picture ever shown' if pr.frozen_at is None else pr.frozen_at}")
+    broken = [row for row in d.view if row.missing_refs]
+    if broken:
+        print("missing references:")
+        for row in broken:
+            print(f"  AU {row.index} (source {row.source_index}, display "
+                  f"{row.presentation}, tid {row.temporal_id}) needs source "
+                  f"{row.missing_refs}")
+    if not d.view[0].config_active:
+        print("configuration      first AU has no active VPS/SPS/PPS")
+    print(f"cause              {d.cause.value}")
+    for e in d.experiments:
+        if not e.applicable:
+            print(f"  what-if {e.action}: not applicable ({e.detail.get('reason', '')})")
+        else:
+            print(f"  what-if {e.action}: "
+                  f"{'RECOVERS' if e.recovered else 'still fails'}"
+                  f"{'' if not e.recovered else f' (first clean display {e.first_clean})'}")
+    if d.minimal is not None:
+        m = d.minimal
+        print(f"minimal reproducer {m.au_count} picture AU(s) "
+              f"{m.source_indices}, {len(m.data)} bytes, still fails")
+    if d.recovery_point is not None:
+        rp = d.recovery_point
+        note = " (needs parameter sets lent from the source)" \
+            if rp.needs_parameter_sets else ""
+        print(f"recovery point     display {rp.presentation} "
+              f"(source decode {rp.source_index}, verified enterable){note}")
+    else:
+        print("recovery point     none before the fault AU")
+    if d.repair is not None:
+        r = d.repair
+        print(f"repair             {r.kind}: {r.au_count} AUs, {len(r.data)} bytes, "
+              f"added source AUs {r.added_source_indices}")
+        print(f"first recovery     "
+              f"{'none' if r.first_recovery is None else f'display {r.first_recovery}'}")
+    return 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -58,8 +107,24 @@ def main(argv: list[str] | None = None) -> int:
         if name in ("plan", "verify"):
             p.add_argument("--json", action="store_true")
 
+    d = sub.add_parser("diagnose",
+                       help="locate the broken link of a sub-stream, per access unit")
+    d.add_argument("stream", help="the (possibly broken) sub-stream")
+    d.add_argument("--source", required=True,
+                   help="source stream the sub-stream was extracted from")
+    d.add_argument("--json", action="store_true")
+
     args = ap.parse_args(argv)
     blob = open(args.stream, "rb").read()
+
+    if args.cmd == "diagnose":
+        source = open(args.source, "rb").read()
+        d = diagnose(blob, source)
+        if args.json:
+            print(json.dumps(d.as_dict(), indent=2))
+            return 0 if d.cause.value == "none" else 1
+        return _print_diagnosis(d)
+
     layout = parse_stream(blob)
 
     if args.cmd == "info":
